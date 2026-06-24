@@ -3,17 +3,36 @@
 A vendor-neutral file protocol for AI agents that need to collaborate through a
 shared filesystem instead of direct messages.
 
-The protocol uses a small state machine, structured events, readiness gates, and validator
-checks. Agents must not complete a collaboration only because both sides
-accepted text; they must classify open questions, clear blockers, pass readiness,
-and then complete.
+The protocol uses a small state machine, structured events, readiness gates, and
+validator checks. Agents must not complete a collaboration only because both
+sides accepted text; they must classify open questions, clear blockers, pass
+readiness, and then complete.
+
+## Install for an Agent
+
+Preferred install:
+
+```bash
+npx skills add benjinus/agent-collaboration-protocol
+```
+
+The `skills` CLI detects supported agents and installs the skill into the
+selected agent locations.
+
+Manual fallback when the CLI is not available:
+
+```bash
+git clone https://github.com/benjinus/agent-collaboration-protocol.git
+```
+
+Copy the cloned folder into your agent's skill or instruction directory, or
+point the agent at `SKILL.md` inside the cloned repository.
 
 ## What It Creates
 
 An ACP collaboration folder contains:
 
-- `protocol.json`: objective, participants, completion gates,
-  and current phase.
+- `protocol.json`: objective, participants, completion gates, and current phase.
 - `events.jsonl`: append-only structured event log. `seq` values must be
   continuous.
 - `proposal.md`: the current proposal only.
@@ -23,38 +42,34 @@ An ACP collaboration folder contains:
 - `readiness.md`: open question classification, blockers, deferred
   nonblocking items, and final implementation readiness.
 
-## Initialize
+## Start A Collaboration
 
-```bash
-python3 scripts/init_collaboration.py \
-  --folder /path/to/shared-collaboration \
-  --participant server \
-  --participant reader \
-  --objective "Align the reader collaboration architecture" \
-  --completion "Accepted decisions are explicit" \
-  --completion "Readiness passes with no blockers" \
-  --completion "Both participants write completed events"
+Use this prompt to start a collaboration from any agent that has this protocol
+installed or can read this repository:
+
+```text
+Use Agent Collaboration Protocol to start a file-based collaboration.
+
+Collaboration folder:
+<absolute-or-repo-relative-folder>
+
+Participants:
+- <participant-a>
+- <participant-b>
+
+Current participant:
+<participant-a>
+
+Objective:
+<one concrete decision or deliverable>
+
+Completion gates:
+- <gate that proves the accepted decisions are explicit>
+- <gate that proves readiness passed with no blockers>
+- <gate that proves every participant completed>
 ```
-
-Initialization uses the current protocol structure:
-
-- Re-running initialization fails when `protocol.json` already exists unless
-  `--resume` is provided.
-- Current protocol folders should use the scripts below instead of hand-writing events.
 
 ## Event Workflow
-
-Append events with the portable helper:
-
-```bash
-python3 scripts/append_event.py \
-  --folder /path/to/shared-collaboration \
-  --participant server \
-  --event proposal_submitted \
-  --summary "Initial proposal ready for review" \
-  --doc proposal.md \
-  --reply-to 1
-```
 
 Allowed events:
 
@@ -79,14 +94,6 @@ Phases:
 - `completed`: collaboration is done.
 - `blocked`: collaboration cannot proceed.
 
-Use `next_action.py` when no runtime-specific watcher exists:
-
-```bash
-python3 scripts/next_action.py \
-  --folder /path/to/shared-collaboration \
-  --participant reader
-```
-
 ## Readiness Gate
 
 Before `readiness_passed` or `completed`, `readiness.md` must show:
@@ -96,48 +103,6 @@ Before `readiness_passed` or `completed`, `readiness.md` must show:
 - Every `[deferred_nonblocking]` item includes `Reason: ...`.
 - No `[blocking]` or `[unresolved]` item remains.
 - The checklist item `Ready to implement` is checked.
-
-Validate before passing readiness and before completing:
-
-```bash
-python3 scripts/validate_collaboration.py --folder /path/to/shared-collaboration
-```
-
-Exit codes:
-
-- `0`: valid.
-- `1`: valid with warnings.
-- `2`: invalid.
-
-## Install for an Agent
-
-Codex example:
-
-```bash
-mkdir -p ~/.codex/skills
-cp -R agent-collaboration-protocol ~/.codex/skills/agent-collaboration-protocol
-```
-
-For Claude Code, OpenCode, Kiro, or another file-capable assistant, install this
-folder in that runtime's local skill or instruction area, or point the agent at
-`SKILL.md`.
-
-## Project Layout
-
-```text
-.
-├── SKILL.md
-├── agents/openai.yaml
-├── references/open-agent-installation.md
-├── scripts/
-│   ├── _acp.py
-│   ├── append_event.py
-│   ├── init_collaboration.py
-│   ├── next_action.py
-│   └── validate_collaboration.py
-└── tests/
-    └── test_collaboration_scripts.py
-```
 
 ## License
 

@@ -20,37 +20,22 @@ An agent runtime is compatible when it can:
 
 The canonical behavior is in `SKILL.md`. The helper scripts are part of the protocol contract, not just examples.
 
-## Installation Patterns
+## Installation Pattern
 
-Codex:
+Preferred installer:
 
-- Place this folder under a Codex skill root, such as `~/.codex/skills/`.
-- Use the skill by asking Codex to set up or participate in ACP.
+```bash
+npx skills add benjinus/agent-collaboration-protocol
+```
 
-Claude Code:
+The `skills` CLI detects supported agents and installs the skill into the
+selected agent locations.
 
-- Install the folder wherever Claude Code can read project or user-level custom
-  instructions.
-- Point Claude Code at `SKILL.md` as the instruction source.
-- Ensure the runtime can run the bundled scripts or reproduce their behavior.
+Manual fallback:
 
-OpenCode:
-
-- Install the folder under the workspace or user instruction area used by the
-  local OpenCode setup.
-- Configure the agent prompt or command to load `SKILL.md` before
-  participating.
-
-Kiro:
-
-- Install the folder under the project or user-level agent instruction area used
-  by the local Kiro setup.
-- Configure the agent/spec workflow to load `SKILL.md` and use the shared
-  collaboration folder as the durable state source.
-
-Other agents:
-
-- Copy or reference `SKILL.md`.
+- Clone `https://github.com/benjinus/agent-collaboration-protocol.git`.
+- Copy the cloned folder into the runtime's skill or instruction directory, or
+  reference `SKILL.md` from the cloned folder.
 - Ensure the runtime can execute or reproduce `init_collaboration.py`,
   `append_event.py`, `next_action.py`, and `validate_collaboration.py`.
 - Do not translate the protocol into a private state format unless it still
