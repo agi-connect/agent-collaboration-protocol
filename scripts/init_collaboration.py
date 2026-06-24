@@ -58,6 +58,8 @@ def main() -> int:
         "participants": [{"id": item} for item in participants],
         "completionGates": completion_gates,
         "currentPhase": "drafting",
+        "proposalOwner": participants[0],
+        "waitingFor": [participants[0]],
         "createdAt": now,
         "updatedAt": now,
     }
@@ -91,6 +93,8 @@ Rules:
 - Use `scripts/append_event.py` or exactly reproduce its event behavior.
 - Use `scripts/next_action.py` to poll for the next portable action when no runtime watcher exists.
 - Run `scripts/validate_collaboration.py --folder <folder>` before `readiness_passed` and before `completed`.
+- Respect `protocol.json.waitingFor`: only listed participants may advance the current phase.
+- After `proposal_submitted`, the proposal owner must wait until all reviewers listed in `waitingFor` submit reviews or block.
 - Do not complete until readiness has passed and every completion gate is satisfied.
 """,
     )

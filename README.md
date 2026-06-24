@@ -8,6 +8,11 @@ validator checks. Agents must not complete a collaboration only because both
 sides accepted text; they must classify open questions, clear blockers, pass
 readiness, and then complete.
 
+The protocol is turn-owned. After the initiator submits a proposal, the
+initiator waits; only the listed reviewer can advance the review phase. The
+initiator may poll or block on timeout, but must not keep editing shared
+documents while the review is pending.
+
 ## Install for an Agent
 
 Preferred install:
@@ -41,6 +46,9 @@ An ACP collaboration folder contains:
 - `decisions.md`: accepted decisions only.
 - `readiness.md`: open question classification, blockers, deferred
   nonblocking items, and final implementation readiness.
+
+No extra state files are part of the protocol. Keep one source of truth for
+collaboration state.
 
 ## Start A Collaboration
 
@@ -89,7 +97,8 @@ Phases:
 - `drafting`: proposal is being prepared.
 - `reviewing`: another participant must review.
 - `revising`: proposal owner addresses review.
-- `decision_review`: participants accept explicit decisions.
+- `decision_review`: open questions are classified, then participants accept
+  explicit decisions.
 - `readiness_check`: questions are classified and blockers cleared.
 - `completed`: collaboration is done.
 - `blocked`: collaboration cannot proceed.
@@ -103,6 +112,10 @@ Before `readiness_passed` or `completed`, `readiness.md` must show:
 - Every `[deferred_nonblocking]` item includes `Reason: ...`.
 - No `[blocking]` or `[unresolved]` item remains.
 - The checklist item `Ready to implement` is checked.
+
+The same question classification must happen before participants accept
+decisions. Acceptance is not valid while unresolved or blocking questions
+remain.
 
 ## License
 

@@ -30,29 +30,38 @@ def main() -> int:
         parser.exit(2, "error: " + "; ".join(errors) + "\n")
 
     phase = protocol.get("currentPhase")
+    waiting_for = protocol.get("waitingFor") if isinstance(protocol.get("waitingFor"), list) else []
+    proposal_owner = protocol.get("proposalOwner")
     recent = last_event(events)
     readiness = readiness_scan(folder)
     print(f"phase: {phase}")
+    print(f"proposal owner: {proposal_owner}")
+    print("waiting for: " + (", ".join(waiting_for) if waiting_for else "none"))
     if recent:
         print(f"last event: seq {recent.get('seq')} {recent.get('event')} from {recent.get('from')}")
 
     if phase == "drafting":
-        print("next action: update proposal.md, then append proposal_submitted.")
+        if args.participant in waiting_for:
+            print("next action: update proposal.md, then append proposal_submitted.")
+        else:
+            print("next action: wait for the proposal owner to submit the proposal.")
     elif phase == "reviewing":
         proposal = last_event(events, "proposal_submitted") or last_event(events, "proposal_revised")
-        if proposal and proposal.get("from") != args.participant:
+        if args.participant in waiting_for and proposal and proposal.get("from") != args.participant:
             print("next action: append a structured review to review.md, then append review_submitted.")
+        elif args.participant == proposal_owner:
+            print("next action: wait for the listed reviewer(s); do not edit proposal.md, decisions.md, readiness.md, or protocol.json unless blocking the collaboration.")
         else:
-            print("next action: wait for another participant to review the proposal.")
+            print("next action: wait for the listed reviewer(s) to submit review_submitted or blocked.")
     elif phase == "revising":
         review = last_event(events, "review_submitted")
-        if review and review.get("from") != args.participant:
+        if args.participant in waiting_for and review and review.get("from") != args.participant:
             print("next action: revise proposal.md, address required changes, then append proposal_revised.")
         else:
             print("next action: wait for the proposal owner to revise.")
     elif phase == "decision_review":
         accepted = {event.get("from") for event in events if event.get("event") == "decision_accepted"}
-        if args.participant not in accepted:
+        if args.participant in waiting_for and args.participant not in accepted:
             print("next action: review decisions.md and append decision_accepted only if decisions are explicit.")
         else:
             print("next action: wait for remaining participants to accept decisions.")
@@ -77,4 +86,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -34,13 +34,16 @@ events. Do not invent completion gates.
 ACP folders use these files:
 
 - `protocol.json`: objective, participants, completion gates,
-  current phase, and timestamps.
+  current phase, proposal owner, waiting participants, and timestamps.
 - `events.jsonl`: append-only event log. Each line is one compact JSON object.
 - `proposal.md`: current proposal only.
 - `review.md`: structured participant reviews.
 - `decisions.md`: accepted decisions only.
 - `readiness.md`: open question classification, blockers, deferred
   nonblocking items, and implementation readiness.
+
+Do not create or use `state.log`, `discussion.md`, or `opinions.md`. They are
+not protocol files and must not appear in completion gates or instructions.
 
 ## Initialization
 
@@ -92,25 +95,37 @@ Allowed events:
 
 All responses must use `reply_to` when they are responding to a prior event.
 `reply_to` must point to an earlier existing event.
+Event timestamps must not move backward as `seq` increases. If a mistake is
+discovered, append `blocked` or a new corrective event; do not rewrite earlier
+events.
 
 ## Phases
 
-Agents must act according to `protocol.json.currentPhase`:
+Agents must act according to `protocol.json.currentPhase` and
+`protocol.json.waitingFor`:
 
 - `drafting`: proposal owner updates `proposal.md`, then appends
   `proposal_submitted`.
-- `reviewing`: another participant appends a structured review to `review.md`,
-  then appends `review_submitted`.
+- `reviewing`: only participants listed in `waitingFor` append structured
+  reviews to `review.md`, then append `review_submitted`.
 - `revising`: proposal owner addresses required changes and appends
   `proposal_revised`.
-- `decision_review`: participants accept explicit decisions in `decisions.md`
-  by appending `decision_accepted`.
+- `decision_review`: proposal owner first classifies every open question in
+  `readiness.md` and appends `question_classified`; only then do participants
+  listed in `waitingFor` accept explicit decisions in `decisions.md` by
+  appending `decision_accepted`.
 - `readiness_check`: participants classify every question, clear blockers, and
   pass readiness.
 - `completed`: stop unless the user explicitly starts a new round.
 - `blocked`: stop until the blocker is resolved.
 
 `completed` is valid only after a prior `readiness_passed` event.
+
+The proposal owner must wait after `proposal_submitted`. While phase is
+`reviewing`, the owner may poll for the next action or append `blocked` for a
+real timeout/blocker, but must not edit `proposal.md`, `decisions.md`,
+`readiness.md`, or `protocol.json`, and must not append advancing events until
+the required review is submitted.
 
 ## Review Format
 
@@ -151,6 +166,8 @@ Before `readiness_passed` or `completed`:
 - `validate_collaboration.py` must pass.
 
 Blocking readiness items also prevent `decision_accepted`.
+Unresolved questions and deferred items missing `Reason: ...` also prevent
+`decision_accepted`.
 
 Final design documents must separate:
 
@@ -185,9 +202,10 @@ Run:
 python3 <skill>/scripts/validate_collaboration.py --folder <collaboration_folder>
 ```
 
-The validator checks required files, event shape, seq
-continuity, phase transitions, `reply_to`, review heading seqs, readiness
-classification, and completion ordering.
+The validator checks required files, absence of obsolete files, event shape,
+seq continuity, timestamp monotonicity, phase transitions, `waitingFor`
+ownership, `reply_to`, review heading seqs, readiness classification, and
+completion ordering.
 
 Exit codes:
 

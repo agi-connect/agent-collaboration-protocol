@@ -37,6 +37,14 @@ REQUIRED_FILES = [
     "readiness.md",
 ]
 
+FORBIDDEN_FILES = [
+    "state.log",
+    "discussion.md",
+    "opinions.md",
+]
+
+FORBIDDEN_PROTOCOL_REFERENCES = set(FORBIDDEN_FILES)
+
 
 class ProtocolError(Exception):
     pass
@@ -101,6 +109,18 @@ def next_seq(events: list[dict[str, Any]]) -> int:
 
 def existing_seqs(events: list[dict[str, Any]]) -> set[int]:
     return {event["seq"] for event in events if isinstance(event.get("seq"), int)}
+
+
+def parse_event_time(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.UTC)
 
 
 def participant_ids(protocol: dict[str, Any]) -> list[str]:
@@ -171,60 +191,156 @@ def decision_acceptance_complete(protocol: dict[str, Any], events: list[dict[str
     return participants.issubset(accepted)
 
 
-def derive_phase(protocol: dict[str, Any], events: list[dict[str, Any]]) -> tuple[str | None, list[str]]:
+def ready_for_decision(folder: Path) -> tuple[bool, list[str]]:
+    readiness = readiness_scan(folder)
+    errors: list[str] = []
+    if readiness["blocking"]:
+        errors.append("blocking readiness items must be cleared before decision_accepted")
+    if readiness["unresolved"]:
+        errors.append("unresolved readiness questions must be classified before decision_accepted")
+    if readiness["deferred_missing_reason"]:
+        errors.append("deferred_nonblocking readiness items require a reason before decision_accepted")
+    return not errors, errors
+
+
+def derive_state(
+    protocol: dict[str, Any],
+    events: list[dict[str, Any]],
+    folder: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    participants = participant_ids(protocol)
     phase: str | None = None
+    proposal_owner: str | None = None
+    waiting_for: list[str] = []
+    review_waiting: set[str] = set()
+    accepted_waiting: set[str] = set()
+    classification_seq = 0
+    latest_decision_input_seq = 0
     errors: list[str] = []
     readiness_passed = False
+
+    def expect_waiting(event: dict[str, Any], allowed: set[str], action: str) -> bool:
+        actor = event.get("from")
+        seq = event.get("seq")
+        if actor not in allowed:
+            expected = ", ".join(sorted(allowed)) or "no participant"
+            errors.append(f"seq {seq}: {action} is reserved for {expected}; got {actor}")
+            return False
+        return True
 
     for event in events:
         name = event.get("event")
         seq = event.get("seq")
+        actor = event.get("from")
         if name == "initialized":
             if seq != 1:
                 errors.append("initialized must be seq 1")
+            if actor not in participants:
+                errors.append(f"seq {seq}: initialized participant is not listed in protocol.json")
+            proposal_owner = actor if isinstance(actor, str) else None
             phase = "drafting"
+            waiting_for = [proposal_owner] if proposal_owner else []
         elif name == "blocked":
             phase = "blocked"
+            waiting_for = []
         elif name == "proposal_submitted":
             if phase not in {"drafting", "revising"}:
                 errors.append(f"seq {seq}: proposal_submitted is not allowed from phase {phase}")
+            expected_owner = {proposal_owner} if proposal_owner else {actor}
+            expect_waiting(event, {item for item in expected_owner if isinstance(item, str)}, "proposal submission")
+            proposal_owner = actor if isinstance(actor, str) else proposal_owner
+            review_waiting = {item for item in participants if item != proposal_owner}
+            if not review_waiting:
+                errors.append(f"seq {seq}: proposal_submitted requires at least one reviewer")
             phase = "reviewing"
+            waiting_for = sorted(review_waiting)
         elif name == "review_submitted":
             if phase != "reviewing":
                 errors.append(f"seq {seq}: review_submitted is not allowed from phase {phase}")
-            phase = "revising"
+            expect_waiting(event, review_waiting, "review submission")
+            if actor in review_waiting:
+                review_waiting.remove(actor)
+            if review_waiting:
+                phase = "reviewing"
+                waiting_for = sorted(review_waiting)
+            else:
+                phase = "revising"
+                waiting_for = [proposal_owner] if proposal_owner else []
         elif name == "proposal_revised":
             if phase != "revising":
                 errors.append(f"seq {seq}: proposal_revised is not allowed from phase {phase}")
+            if proposal_owner:
+                expect_waiting(event, {proposal_owner}, "proposal revision")
+            latest_decision_input_seq = seq if isinstance(seq, int) else latest_decision_input_seq
+            classification_seq = 0
             phase = "decision_review"
+            waiting_for = [proposal_owner] if proposal_owner else []
         elif name == "decision_proposed":
             if phase not in {"revising", "decision_review"}:
                 errors.append(f"seq {seq}: decision_proposed is not allowed from phase {phase}")
+            if proposal_owner:
+                expect_waiting(event, {proposal_owner}, "decision proposal")
+            latest_decision_input_seq = seq if isinstance(seq, int) else latest_decision_input_seq
+            classification_seq = 0
             phase = "decision_review"
+            waiting_for = [proposal_owner] if proposal_owner else []
+        elif name == "question_classified":
+            if phase != "decision_review":
+                errors.append(f"seq {seq}: question_classified is not allowed from phase {phase}")
+            if proposal_owner:
+                expect_waiting(event, {proposal_owner}, "question classification")
+            classification_seq = seq if isinstance(seq, int) else classification_seq
+            accepted_waiting = set(participants)
+            phase = "decision_review"
+            waiting_for = sorted(accepted_waiting)
         elif name == "decision_accepted":
             if phase != "decision_review":
                 errors.append(f"seq {seq}: decision_accepted is not allowed from phase {phase}")
-            prefix = [item for item in events if isinstance(item.get("seq"), int) and item["seq"] <= seq]
-            phase = "readiness_check" if decision_acceptance_complete(protocol, prefix) else "decision_review"
-        elif name == "question_classified":
-            if phase != "readiness_check":
-                errors.append(f"seq {seq}: question_classified is not allowed from phase {phase}")
-            phase = "readiness_check"
+            if latest_decision_input_seq and classification_seq <= latest_decision_input_seq:
+                errors.append(f"seq {seq}: decision_accepted requires question_classified after the latest proposal or decision")
+            expect_waiting(event, accepted_waiting, "decision acceptance")
+            if folder is not None:
+                _, readiness_errors = ready_for_decision(folder)
+                errors.extend(f"seq {seq}: {item}" for item in readiness_errors)
+            if actor in accepted_waiting:
+                accepted_waiting.remove(actor)
+            if accepted_waiting:
+                phase = "decision_review"
+                waiting_for = sorted(accepted_waiting)
+            else:
+                phase = "readiness_check"
+                waiting_for = [proposal_owner] if proposal_owner else []
         elif name == "readiness_passed":
             if phase != "readiness_check":
                 errors.append(f"seq {seq}: readiness_passed is not allowed from phase {phase}")
+            if proposal_owner:
+                expect_waiting(event, {proposal_owner}, "readiness pass")
             readiness_passed = True
             phase = "readiness_check"
+            waiting_for = [proposal_owner] if proposal_owner else []
         elif name == "completed":
             if phase != "readiness_check" or not readiness_passed:
                 errors.append(f"seq {seq}: completed requires a prior readiness_passed event")
+            if proposal_owner:
+                expect_waiting(event, {proposal_owner}, "completion")
             phase = "completed"
-    return phase, errors
+            waiting_for = []
+    return {
+        "currentPhase": phase,
+        "proposalOwner": proposal_owner,
+        "waitingFor": waiting_for,
+    }, errors
+
+
+def derive_phase(protocol: dict[str, Any], events: list[dict[str, Any]]) -> tuple[str | None, list[str]]:
+    state, errors = derive_state(protocol, events)
+    return state["currentPhase"], errors
 
 
 def validate_event_shape(events: list[dict[str, Any]]) -> list[str]:
     errors: list[str] = []
     seen: set[int] = set()
+    previous_at: dt.datetime | None = None
     for expected, event in enumerate(events, start=1):
         seq = event.get("seq")
         if seq != expected:
@@ -237,9 +353,20 @@ def validate_event_shape(events: list[dict[str, Any]]) -> list[str]:
         if event.get("event") not in EVENTS:
             errors.append(f"seq {seq}: unknown event {event.get('event')!r}")
         reply_to = event.get("reply_to")
+        if event.get("event") != "initialized" and reply_to is None:
+            errors.append(f"seq {seq}: reply_to is required after initialized")
         if reply_to is not None:
             if not isinstance(reply_to, int) or reply_to not in seen:
                 errors.append(f"seq {seq}: reply_to must point to an earlier event")
+        parsed_at = parse_event_time(event.get("at"))
+        if parsed_at is None:
+            errors.append(f"seq {seq}: at must be an ISO-8601 timestamp")
+        elif previous_at is not None and parsed_at < previous_at:
+            errors.append(f"seq {seq}: at must not be earlier than the previous event")
+        if parsed_at is not None:
+            previous_at = parsed_at
+        if isinstance(seq, int):
+            seen.add(seq)
     return errors
 
 
@@ -270,6 +397,8 @@ def validate_review_links(folder: Path, events: list[dict[str, Any]]) -> list[st
             errors.append(f"review.md heading seq {seq}: no matching event")
         elif event.get("event") != "review_submitted":
             errors.append(f"review.md heading seq {seq}: matching event is {event.get('event')}, not review_submitted")
+        elif headings[seq] != event.get("from"):
+            errors.append(f"review.md heading seq {seq}: participant {headings[seq]!r} does not match event from {event.get('from')!r}")
     return errors
 
 
@@ -279,6 +408,9 @@ def validate_folder(folder: Path) -> tuple[list[str], list[str]]:
     for name in REQUIRED_FILES:
         if not (folder / name).exists():
             errors.append(f"missing {name}")
+    for name in FORBIDDEN_FILES:
+        if (folder / name).exists():
+            errors.append(f"{name} is not part of the protocol; remove it and use events.jsonl/readiness.md instead")
 
     try:
         protocol = load_protocol(folder)
@@ -293,15 +425,31 @@ def validate_folder(folder: Path) -> tuple[list[str], list[str]]:
         errors.append("protocol.json participants must not be empty")
     if not protocol.get("completionGates"):
         errors.append("protocol.json completionGates must not be empty")
+    if "version" in protocol:
+        errors.append("protocol.json must not include a protocol version field")
+    for gate in protocol.get("completionGates", []):
+        if isinstance(gate, str):
+            for forbidden in FORBIDDEN_PROTOCOL_REFERENCES:
+                if forbidden in gate:
+                    errors.append(f"completion gate must not reference obsolete file {forbidden}")
+    if "waitingFor" not in protocol:
+        errors.append("protocol.json waitingFor must be present")
+    if "proposalOwner" not in protocol:
+        errors.append("protocol.json proposalOwner must be present")
 
     events, event_errors = read_events(folder)
     errors.extend(event_errors)
     errors.extend(validate_event_shape(events))
     errors.extend(validate_review_links(folder, events))
-    derived_phase, phase_errors = derive_phase(protocol, events)
+    derived_state, phase_errors = derive_state(protocol, events, folder)
     errors.extend(phase_errors)
+    derived_phase = derived_state["currentPhase"]
     if derived_phase and protocol.get("currentPhase") != derived_phase:
         errors.append(f"protocol.json currentPhase is {protocol.get('currentPhase')}, expected {derived_phase}")
+    for field in ("proposalOwner", "waitingFor"):
+        expected = derived_state[field]
+        if field in protocol and expected is not None and protocol.get(field) != expected:
+            errors.append(f"protocol.json {field} is {protocol.get(field)!r}, expected {expected!r}")
 
     readiness = readiness_scan(folder)
     has_decision_acceptance = any(event.get("event") == "decision_accepted" for event in events)
@@ -309,6 +457,11 @@ def validate_folder(folder: Path) -> tuple[list[str], list[str]]:
     has_completed = any(event.get("event") == "completed" for event in events)
     if readiness["blocking"] and has_decision_acceptance:
         errors.append("blocking readiness items must be cleared before decision_accepted")
+    if has_decision_acceptance:
+        if readiness["unresolved"]:
+            errors.append("unresolved readiness questions must be classified before decision_accepted")
+        if readiness["deferred_missing_reason"]:
+            errors.append("deferred_nonblocking readiness items require a reason before decision_accepted")
     if has_readiness_passed or has_completed:
         if readiness["blocking"]:
             errors.append("blocking readiness items must be cleared before readiness_passed or completed")
@@ -345,6 +498,8 @@ def append_event(
         raise ProtocolError("; ".join(errors))
     if reply_to is not None and reply_to not in existing_seqs(events):
         raise ProtocolError("reply_to must point to an existing event")
+    if events and reply_to is None:
+        raise ProtocolError("reply_to is required after initialized")
 
     seq = next_seq(events)
     payload: dict[str, Any] = {
@@ -360,12 +515,17 @@ def append_event(
         payload["reply_to"] = reply_to
 
     candidate_events = [*events, payload]
-    derived_phase, phase_errors = derive_phase(protocol, candidate_events)
+    derived_state, phase_errors = derive_state(protocol, candidate_events, folder)
     if phase_errors:
         raise ProtocolError("; ".join(phase_errors))
     readiness = readiness_scan(folder)
     if event_name in {"decision_accepted", "readiness_passed", "completed"} and readiness["blocking"]:
         raise ProtocolError("blocking readiness items must be cleared first")
+    if event_name == "decision_accepted":
+        if readiness["unresolved"]:
+            raise ProtocolError("unresolved readiness questions must be classified first")
+        if readiness["deferred_missing_reason"]:
+            raise ProtocolError("deferred_nonblocking readiness items require a reason")
     if event_name in {"readiness_passed", "completed"}:
         if readiness["unresolved"]:
             raise ProtocolError("unresolved readiness questions must be classified first")
@@ -378,7 +538,9 @@ def append_event(
         if missing_gates:
             raise ProtocolError("completion gates must be checked first: " + ", ".join(missing_gates))
     append_jsonl(folder / "events.jsonl", payload)
-    if derived_phase:
-        protocol["currentPhase"] = derived_phase
+    if derived_state["currentPhase"]:
+        protocol["currentPhase"] = derived_state["currentPhase"]
+        protocol["proposalOwner"] = derived_state["proposalOwner"]
+        protocol["waitingFor"] = derived_state["waitingFor"]
         write_protocol(folder, protocol)
     return payload

@@ -184,6 +184,14 @@ class CollaborationScriptsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("reply_to", result.stdout)
 
+    def test_append_requires_reply_to_after_initialized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "collab"
+            self.assertEqual(self.init_folder(folder).returncode, 0)
+            result = self.append(folder, "server", "proposal_submitted", "proposal ready", "proposal.md")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("reply_to is required after initialized", result.stderr)
+
     def test_validator_rejects_review_seq_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "collab"
@@ -204,6 +212,26 @@ Context:
             self.assertEqual(result.returncode, 2)
             self.assertIn("review.md heading seq 2", result.stdout)
 
+    def test_validator_rejects_review_participant_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "collab"
+            self.assertEqual(self.init_folder(folder).returncode, 0)
+            self.assertEqual(self.append(folder, "server", "proposal_submitted", "proposal ready", "proposal.md", 1).returncode, 0)
+            self.assertEqual(self.append(folder, "reader", "review_submitted", "review ready", "review.md", 2).returncode, 0)
+            (folder / "review.md").write_text(
+                """# Review
+
+## 2026-01-01T00:00:00Z - server - seq 3
+
+Context:
+- wrong participant.
+""",
+                encoding="utf-8",
+            )
+            result = run_script(VALIDATE, "--folder", folder)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("participant 'server' does not match event from 'reader'", result.stdout)
+
     def test_quality_gate_blocks_readiness_until_questions_are_classified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "collab"
@@ -221,14 +249,19 @@ Context:
                 encoding="utf-8",
             )
             self.assertEqual(self.append(folder, "server", "proposal_revised", "proposal revised", "proposal.md", 3).returncode, 0)
-            self.assertEqual(self.append(folder, "server", "decision_accepted", "server accepts", "decisions.md", 4).returncode, 0)
-            self.assertEqual(self.append(folder, "reader", "decision_accepted", "reader accepts", "decisions.md", 4).returncode, 0)
-            blocked = self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 6)
+            decision = self.append(folder, "server", "decision_accepted", "server accepts", "decisions.md", 4)
+            self.assertNotEqual(decision.returncode, 0)
+            self.assertIn("unresolved readiness", decision.stderr)
+
+            blocked = self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 4)
             self.assertNotEqual(blocked.returncode, 0)
-            self.assertIn("unresolved readiness", blocked.stderr)
+            self.assertIn("readiness_passed is not allowed from phase decision_review", blocked.stderr)
 
             self.write_valid_readiness(folder)
-            ready = self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 6)
+            self.assertEqual(self.append(folder, "server", "question_classified", "questions classified", "readiness.md", 4).returncode, 0)
+            self.assertEqual(self.append(folder, "server", "decision_accepted", "server accepts", "decisions.md", 5).returncode, 0)
+            self.assertEqual(self.append(folder, "reader", "decision_accepted", "reader accepts", "decisions.md", 6).returncode, 0)
+            ready = self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 7)
             self.assertEqual(ready.returncode, 0, ready.stderr)
 
     def test_completed_requires_readiness_passed(self) -> None:
@@ -275,12 +308,90 @@ Context:
                 encoding="utf-8",
             )
             self.assertEqual(self.append(folder, "server", "proposal_revised", "proposal revised", "proposal.md", 3).returncode, 0)
-            self.assertEqual(self.append(folder, "server", "decision_accepted", "server accepts", "decisions.md", 4).returncode, 0)
-            self.assertEqual(self.append(folder, "reader", "decision_accepted", "reader accepts", "decisions.md", 4).returncode, 0)
-            self.assertEqual(self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 6).returncode, 0)
-            completed = self.append(folder, "server", "completed", "done", "decisions.md", 7)
+            self.assertEqual(self.append(folder, "server", "question_classified", "questions classified", "readiness.md", 4).returncode, 0)
+            self.assertEqual(self.append(folder, "server", "decision_accepted", "server accepts", "decisions.md", 5).returncode, 0)
+            self.assertEqual(self.append(folder, "reader", "decision_accepted", "reader accepts", "decisions.md", 6).returncode, 0)
+            self.assertEqual(self.append(folder, "server", "readiness_passed", "ready", "readiness.md", 7).returncode, 0)
+            completed = self.append(folder, "server", "completed", "done", "decisions.md", 8)
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("completion gates", completed.stderr)
+
+    def test_proposal_owner_must_wait_during_reviewing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "collab"
+            self.assertEqual(self.init_folder(folder).returncode, 0)
+            self.assertEqual(self.append(folder, "server", "proposal_submitted", "proposal ready", "proposal.md", 1).returncode, 0)
+
+            premature = self.append(folder, "server", "proposal_revised", "proposal revised", "proposal.md", 2)
+            self.assertNotEqual(premature.returncode, 0)
+            self.assertIn("proposal_revised is not allowed from phase reviewing", premature.stderr)
+
+            action = run_script(ROOT / "scripts" / "next_action.py", "--folder", folder, "--participant", "server")
+            self.assertEqual(action.returncode, 0, action.stderr)
+            self.assertIn("wait for the listed reviewer", action.stdout)
+            self.assertIn("do not edit proposal.md", action.stdout)
+
+    def test_validator_rejects_obsolete_files_and_completion_gate_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "collab"
+            self.assertEqual(self.init_folder(folder).returncode, 0)
+            (folder / "state.log").write_text("old state\n", encoding="utf-8")
+            protocol = json.loads((folder / "protocol.json").read_text(encoding="utf-8"))
+            protocol["completionGates"].append("state.log has completion")
+            (folder / "protocol.json").write_text(json.dumps(protocol, ensure_ascii=False), encoding="utf-8")
+
+            result = run_script(VALIDATE, "--folder", folder)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("state.log is not part of the protocol", result.stdout)
+            self.assertIn("completion gate must not reference obsolete file state.log", result.stdout)
+
+    def test_validator_rejects_event_time_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "collab"
+            self.assertEqual(self.init_folder(folder).returncode, 0)
+            with (folder / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "seq": 2,
+                            "from": "server",
+                            "event": "proposal_submitted",
+                            "at": "2026-01-01T00:00:00Z",
+                            "summary": "proposal",
+                            "reply_to": 1,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+                handle.write(
+                    json.dumps(
+                        {
+                            "seq": 3,
+                            "from": "reader",
+                            "event": "review_submitted",
+                            "at": "2025-12-31T23:59:59Z",
+                            "summary": "review",
+                            "reply_to": 2,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            (folder / "review.md").write_text(
+                """# Review
+
+## 2025-12-31T23:59:59Z - reader - seq 3
+
+Context:
+- Read proposal.
+""",
+                encoding="utf-8",
+            )
+
+            result = run_script(VALIDATE, "--folder", folder)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("at must not be earlier than the previous event", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

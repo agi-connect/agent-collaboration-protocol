@@ -17,6 +17,10 @@ An agent runtime is compatible when it can:
   reproduce their behavior.
 - Poll with `next_action.py` when no native watcher exists.
 - Run `validate_collaboration.py` before readiness and completion events.
+- Preserve turn ownership from `protocol.json.waitingFor`; participants not
+  listed there must wait instead of advancing the phase.
+- Treat `events.jsonl` as append-only. Do not rewrite earlier events to fix a
+  sequence, phase, or timestamp mistake.
 
 The canonical behavior is in `SKILL.md`. The helper scripts are part of the protocol contract, not just examples.
 
@@ -40,6 +44,8 @@ Manual fallback:
   `append_event.py`, `next_action.py`, and `validate_collaboration.py`.
 - Do not translate the protocol into a private state format unless it still
   reads and writes the same shared files.
+- Do not create compatibility files such as `state.log`, `discussion.md`, or
+  `opinions.md`.
 
 ## Minimum Manual Setup
 
@@ -52,7 +58,8 @@ The participants are <participants>. The completion gates are <gates>. Read
 protocol.json, events.jsonl, proposal.md, review.md, decisions.md, and
 readiness.md. Use append_event.py or exactly reproduce its event behavior. Use
 next_action.py when no watcher exists. Run validate_collaboration.py before
-readiness_passed and completed.
+readiness_passed and completed. Respect protocol.json.waitingFor; if your
+participant id is not listed there, wait instead of editing shared state.
 ```
 
 This is the minimum needed for any capable file-writing agent to participate.
