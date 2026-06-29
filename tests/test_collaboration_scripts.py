@@ -55,18 +55,45 @@ class CollaborationScriptsTest(unittest.TestCase):
         self.assertIn("scripts/init_collaboration.py", skill_text)
         self.assertIn("references/open-agent-installation.md", "\n".join(REQUIRED_PACKAGE_FILES))
 
+    def assert_same_text_file(self, root_relative: str) -> None:
+        root_file = ROOT / root_relative
+        package_file = PACKAGE / root_relative
+        self.assertEqual(
+            package_file.read_text(encoding="utf-8"),
+            root_file.read_text(encoding="utf-8"),
+            root_relative,
+        )
+
+    def test_installable_package_stays_in_sync_with_root_runtime_files(self) -> None:
+        for path in [
+            "SKILL.md",
+            "LICENSE",
+            "references/open-agent-installation.md",
+            "scripts/_acp.py",
+            "scripts/init_collaboration.py",
+            "scripts/append_event.py",
+            "scripts/next_action.py",
+            "scripts/wait_for_turn.py",
+            "scripts/validate_collaboration.py",
+        ]:
+            self.assert_same_text_file(path)
+
     def test_packaged_docs_use_current_repo_owner(self) -> None:
         docs = {
-            path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*")
+            f"{label}:{path.relative_to(base).as_posix()}": path.read_text(encoding="utf-8")
+            for label, base in [("root", ROOT), ("package", PACKAGE)]
+            for path in base.rglob("*")
             if path.is_file() and path.suffix in DOC_SUFFIXES and ".git" not in path.parts
         }
         stale_paths = [name for name, text in docs.items() if "benjinus" in text]
         self.assertEqual(stale_paths, [])
 
-        install_reference = docs["references/open-agent-installation.md"]
-        self.assertIn("npx skills add agi-connect/agent-collaboration-protocol", install_reference)
-        self.assertIn("https://github.com/agi-connect/agent-collaboration-protocol.git", install_reference)
+        for install_reference in [
+            docs["root:references/open-agent-installation.md"],
+            docs["package:references/open-agent-installation.md"],
+        ]:
+            self.assertIn("npx skills add agi-connect/agent-collaboration-protocol", install_reference)
+            self.assertIn("https://github.com/agi-connect/agent-collaboration-protocol.git", install_reference)
 
     def init_folder(self, folder: Path) -> subprocess.CompletedProcess[str]:
         return run_script(
